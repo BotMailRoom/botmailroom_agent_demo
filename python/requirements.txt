@@ -1,0 +1,6 @@
+botmailroom
+exa_py
+fastapi
+openai
+pydantic-settings
+uvicorn
