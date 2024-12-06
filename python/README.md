@@ -24,7 +24,9 @@ ngrok http localhost:8000
    - Visit [OpenAI API Keys](https://platform.openai.com/api-keys)
    - Add to `.env`: `OPENAI_API_KEY=your_key`
 
-5. Get an Exa API Key
+5. Optional: Get an Exa API Key
+
+   If you provide an Exa API key, the agent will be able to perform web searches.
 
    - Visit [Exa Dashboard](https://dashboard.exa.ai/api-keys)
    - Add to `.env`: `EXA_API_KEY=your_key`

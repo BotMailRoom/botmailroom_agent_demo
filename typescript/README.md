@@ -26,6 +26,8 @@ ngrok http localhost:3000
 
 5. Get an Exa API Key
 
+   If you provide an Exa API key, the agent will be able to perform web searches.
+
    - Visit [Exa Dashboard](https://dashboard.exa.ai/api-keys)
    - Add to `.env`: `EXA_API_KEY=your_key`
 

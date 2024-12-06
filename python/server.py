@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     botmailroom_webhook_secret: Optional[str] = None
     botmailroom_api_key: str
     openai_api_key: str
-    exa_api_key: str
+    exa_api_key: Optional[str] = None
     max_response_cycles: int = 10
 
 
@@ -42,7 +42,9 @@ setup_logging()
 # Initialize clients
 botmailroom_client = BotMailRoom(api_key=settings.botmailroom_api_key)
 openai_client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
-exa_client = Exa(api_key=settings.exa_api_key)
+exa_client = (
+    Exa(api_key=settings.exa_api_key) if settings.exa_api_key else None
+)
 
 # Initialize agent
 
@@ -62,25 +64,27 @@ chat = [
 ]
 tools = botmailroom_client.get_tools(
     tools_to_include=["botmailroom_send_email"]
-) + [
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Perform a search query on the web, and retrieve the most relevant URLs/web data.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query to perform.",
+)
+if exa_client:
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Perform a search query on the web, and retrieve the most relevant URLs/web data.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query to perform.",
+                        },
                     },
+                    "required": ["query"],
                 },
-                "required": ["query"],
             },
-        },
-    }
-]
+        }
+    )
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -108,6 +112,8 @@ async def _validate_and_parse_email(request: Request) -> EmailPayload:
 
 
 def exa_search(query: str) -> str:
+    if not exa_client:
+        raise ValueError("Exa client not initialized")
     response = exa_client.search_and_contents(
         query=query, type="auto", highlights=True
     )

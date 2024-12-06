@@ -16,7 +16,7 @@ const settings = {
   botmailroomWebhookSecret: process.env.BOTMAILROOM_WEBHOOK_SECRET,
   botmailroomApiKey: process.env.BOTMAILROOM_API_KEY!,
   openaiApiKey: process.env.OPENAI_API_KEY!,
-  exaApiKey: process.env.EXA_API_KEY!,
+  exaApiKey: process.env.EXA_API_KEY,
   maxResponseCycles: 10,
 };
 
@@ -27,7 +27,7 @@ const openai = new OpenAI({
   apiKey: settings.openaiApiKey,
 });
 
-const exa = new Exa(settings.exaApiKey);
+const exa = settings.exaApiKey ? new Exa(settings.exaApiKey) : undefined;
 const bmr = new BotMailRoom(settings.botmailroomApiKey);
 
 // System prompt and tools
@@ -52,28 +52,33 @@ async function initializeTools() {
   tools.push(
     ...(await bmr.getTools(ToolSchemaType.OpenAI, ["botmailroom_send_email"]))
   );
-  tools.push({
-    type: "function",
-    function: {
-      name: "web_search",
-      description:
-        "Perform a search query on the web, and retrieve the most relevant URLs/web data.",
-      parameters: {
-        type: "object",
-        properties: {
-          query: {
-            type: "string",
-            description: "The search query to perform.",
+  if (exa) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "web_search",
+        description:
+          "Perform a search query on the web, and retrieve the most relevant URLs/web data.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "The search query to perform.",
+            },
           },
+          required: ["query"],
         },
-        required: ["query"],
       },
-    },
-  });
+    });
+  }
 }
 
 // Helper functions
 const exaSearch = async (query: string): Promise<string> => {
+  if (!exa) {
+    throw new Error("Exa client not initialized");
+  }
   const response = await exa.searchAndContents(query, {
     type: "auto",
     highlights: true,
