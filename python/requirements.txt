@@ -1,3 +1,4 @@
+aiosqlite
 botmailroom
 exa_py
 fastapi

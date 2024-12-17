@@ -8,6 +8,8 @@ import {
   EmailPayloadSchema,
   ToolSchemaType,
 } from "botmailroom/dist/types";
+import sqlite3 from "sqlite3";
+import { open } from "sqlite";
 
 dotenv.config();
 
@@ -18,6 +20,7 @@ const settings = {
   openaiApiKey: process.env.OPENAI_API_KEY!,
   exaApiKey: process.env.EXA_API_KEY,
   maxResponseCycles: 10,
+  databaseUrl: process.env.DATABASE_URL || "./sql_app.db",
 };
 
 // Initialize clients
@@ -32,25 +35,21 @@ const bmr = new BotMailRoom(settings.botmailroomApiKey);
 
 // System prompt and tools
 const systemPrompt = `
-- Follow the user's instructions carefully
-- If the task was sent via email, respond to that email
-    - Email content should be formatted as email compliant html
-- Always start by creating a set of steps to complete the task given by the user.
-- Always respond with one of the following:
-    - A tool call
-    - \`PLAN\` followed by a description of the steps to complete the task
-    - \`WAIT\` to wait for a response to an email
-    - \`DONE\` to indicate that the task is complete
+- Respond to the user's instructions carefully
+- The user is only able to respond to emails, so if you have a message to send, use the \`botmailroom_send_email\` tool.
+- Email content should be formatted as email compliant html.
+- When sending emails, prefer responding to an existing email thread over starting a new one.
+- Only use one tool at a time
+- Always respond with a tool call
 `;
-
-const chat: OpenAI.Chat.ChatCompletionMessageParam[] = [
-  { role: "system", content: systemPrompt },
-];
 
 const tools: any[] = [];
 async function initializeTools() {
   tools.push(
-    ...(await bmr.getTools(ToolSchemaType.OpenAI, ["botmailroom_send_email"]))
+    ...(await bmr.getTools({
+      toolSchemaType: ToolSchemaType.OpenAI,
+      toolsToInclude: ["botmailroom_send_email"],
+    }))
   );
   if (exa) {
     tools.push({
@@ -91,91 +90,117 @@ const exaSearch = async (query: string): Promise<string> => {
     .join("\n\n");
 };
 
-async function handleModelCall() {
-  let cycleCount = 1;
+// Add database connection
+let db: any = null;
+
+// Initialize database
+async function initializeDatabase() {
+  db = await open({
+    filename: settings.databaseUrl,
+    driver: sqlite3.Database,
+  });
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS chats (
+      id VARCHAR PRIMARY KEY,
+      chat_thread JSON
+    )
+  `);
+}
+
+// Update handleModelCall to match Python version
+async function handleModelCall(chatId: string, chatThread: any[]) {
+  let cycleCount = 0;
+  let end = false;
+
   while (cycleCount <= settings.maxResponseCycles) {
+    cycleCount++;
     const output = await openai.chat.completions.create({
       model: "gpt-4o",
-      messages: chat,
+      messages: chatThread,
       tools,
     });
 
     const message = output.choices[0].message;
 
     if (message.tool_calls) {
-      chat.push(message);
-      const toolCall = message.tool_calls[0];
-      console.log(
-        `\x1b[93mTool call:\x1b[0m ${toolCall.function.name} \x1b[93mwith args:\x1b[0m ${toolCall.function.arguments}`
-      );
+      chatThread.push(message);
 
-      const arguments_ = JSON.parse(toolCall.function.arguments);
-      let toolOutput: string;
-
-      if (toolCall.function.name.startsWith("botmailroom_")) {
-        toolOutput = await bmr.executeTool(
-          toolCall.function.name,
-          arguments_,
-          true,
-          true
+      for (const toolCall of message.tool_calls) {
+        console.log(
+          `\x1b[93mTool call:\x1b[0m ${toolCall.function.name} \x1b[93mwith args:\x1b[0m ${toolCall.function.arguments}`
         );
-      } else if (toolCall.function.name === "web_search") {
-        toolOutput = await exaSearch(arguments_.query);
-      } else {
-        throw new Error(`Unknown tool: ${toolCall.function.name}`);
-      }
 
-      chat.push({
-        role: "tool",
-        content: toolOutput,
-        tool_call_id: toolCall.id,
-      });
-      console.log(`\x1b[93mTool output:\x1b[0m ${toolOutput}`);
+        const arguments_ = JSON.parse(toolCall.function.arguments);
+        let toolOutput: string;
+
+        if (toolCall.function.name.startsWith("botmailroom_")) {
+          toolOutput = await bmr.executeTool(
+            toolCall.function.name,
+            arguments_,
+            true,
+            true
+          );
+          end = true;
+        } else if (toolCall.function.name === "web_search") {
+          toolOutput = await exaSearch(arguments_.query);
+        } else {
+          throw new Error(`Unknown tool: ${toolCall.function.name}`);
+        }
+
+        chatThread.push({
+          role: "tool",
+          content: toolOutput,
+          name: toolCall.function.name,
+          tool_call_id: toolCall.id,
+        });
+        console.log(`\x1b[93mTool output:\x1b[0m ${toolOutput}`);
+      }
     } else {
       const content = message.content;
-      chat.push({ role: "assistant", content: content || "" });
-
-      if (!content) {
-        console.warn(`\x1b[93mInvalid response from model:\x1b[0m ${content}`);
-        chat.push({
-          role: "user",
-          content:
-            "Please respond with either a tool call, PLAN, WAIT, or DONE",
-        });
-      } else if (content.startsWith("PLAN")) {
-        console.log(`\x1b[93mPlan:\x1b[0m ${content.slice(4)}`);
-        chat.push({
-          role: "user",
-          content: "Looks like a good plan, let's do it!",
-        });
-      } else if (content.startsWith("WAIT")) {
-        console.log("\x1b[93mWaiting for user response\x1b[0m");
-        return;
-      } else if (content.startsWith("DONE")) {
-        console.log("\x1b[93mTask complete\x1b[0m");
-        // clear chat
-        chat.splice(1);
-        return;
-      } else {
-        console.warn(`\x1b[93mInvalid response from model:\x1b[0m ${content}`);
-        chat.push({
-          role: "user",
-          content:
-            "Please respond with either a tool call, PLAN, WAIT, or DONE",
-        });
-      }
+      console.warn(`\x1b[93mInvalid response from model:\x1b[0m ${content}`);
+      chatThread.push({
+        role: "user",
+        content: "Please respond with a tool call",
+      });
     }
 
-    cycleCount++;
+    if (end) break;
+
+    if (db) {
+      await db.run(
+        "UPDATE chats SET chat_thread = ? WHERE id = ?",
+        JSON.stringify(chatThread),
+        chatId
+      );
+    }
   }
 }
 
+// Update handleEmail to match Python version
 async function handleEmail(emailPayload: EmailPayload) {
   console.log(
     `\x1b[93mReceived email\x1b[0m from ${emailPayload.from_address.address}`
   );
-  chat.push({ role: "user", content: emailPayload.thread_prompt });
-  await handleModelCall();
+
+  const chatId = emailPayload.previous_emails?.length
+    ? emailPayload.previous_emails[0].id
+    : emailPayload.id;
+
+  let chatThread = [{ role: "system", content: systemPrompt }];
+
+  if (db) {
+    const existingChat = await db.get(
+      "SELECT * FROM chats WHERE id = ?",
+      chatId
+    );
+    if (existingChat) {
+      chatThread = JSON.parse(existingChat.chat_thread);
+    }
+  }
+
+  chatThread.push({ role: "user", content: emailPayload.thread_prompt });
+  await handleModelCall(chatId, chatThread);
 }
 
 // Routes
@@ -220,13 +245,13 @@ app.post("/receive-email", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8000;
-initializeTools()
+Promise.all([initializeTools(), initializeDatabase()])
   .then(() => {
     app.listen(PORT, () => {
       console.log(`Server is running on port ${PORT}`);
     });
   })
   .catch((error) => {
-    console.error("Error initializing tools:", error);
+    console.error("Error during initialization:", error);
     process.exit(1);
   });

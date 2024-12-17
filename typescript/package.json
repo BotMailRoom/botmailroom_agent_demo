@@ -7,12 +7,14 @@
     "start": "ts-node-dev --respawn --transpile-only src/server.ts"
   },
   "dependencies": {
-    "botmailroom": "^0.0.7",
+    "botmailroom": "^0.0.11",
     "dotenv": "^16.4.7",
     "exa-js": "^1.3.3",
     "express": "^4.21.2",
     "openai": "^4.76.0",
-    "ts-node-dev": "^2.0.0"
+    "ts-node-dev": "^2.0.0",
+    "sqlite3": "^5.1.7",
+    "sqlite": "^5.1.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.0"
